@@ -99,19 +99,24 @@ async def backtest_results():
     pool = await get_pool()
     async with pool.acquire() as conn:
         setup = await conn.fetchrow(
-            "SELECT setup_id, setup_name, elected_at FROM active_setup ORDER BY elected_at DESC LIMIT 1"
+            "SELECT setup_id, setup_name, deployed_at FROM active_setup WHERE is_current = TRUE LIMIT 1"
         )
         watchlist = await conn.fetch(
             """
-            SELECT w.symbol, w.composite_score, w.rank,
-                   b.win_rate, b.avg_r, b.sharpe, b.max_dd,
-                   b.backtest_sharpe, b.validation_sharpe, b.trade_count, b.best_setup_id
+            SELECT w.symbol, w.added_at, w.updated_at,
+                   b.setup_id, b.setup_name, b.num_trades,
+                   b.win_rate, b.avg_r, b.sharpe, b.max_dd, b.oos_sharpe,
+                   b.passed_walkforward, b.backtested_at
             FROM watchlist w
-            LEFT JOIN backtest_results b ON b.symbol = w.symbol
-            ORDER BY w.rank ASC
+            LEFT JOIN LATERAL (
+                SELECT * FROM backtest_results br
+                WHERE br.symbol = w.symbol
+                ORDER BY br.backtested_at DESC LIMIT 1
+            ) b ON TRUE
+            ORDER BY b.sharpe DESC NULLS LAST
             """
         )
-        universe_count = await conn.fetchval("SELECT COUNT(*) FROM universe")
+        universe_count = await conn.fetchval("SELECT COUNT(*) FROM universe WHERE is_active = TRUE")
 
     return {
         "active_setup": dict(setup) if setup else None,
