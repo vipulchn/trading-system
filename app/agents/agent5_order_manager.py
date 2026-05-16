@@ -62,6 +62,8 @@ async def run_order_manager() -> None:
             asyncio.create_task(_execute_signal(raw))
         except asyncio.CancelledError:
             break
+        except TimeoutError:
+            continue  # BLPOP socket timeout — queue is empty, just retry
         except Exception as exc:
             logger.error("Agent 5: BLPOP loop error: %s", exc)
             await asyncio.sleep(2)

@@ -68,17 +68,22 @@ async def _load_angel_one_master() -> None:
         instrument_type = row.get("instrumenttype", "")
         symbol = row.get("symbol", "").upper()
         token = row.get("token", "")
-        name = row.get("name", "").upper()
 
         if seg == "NSE" and instrument_type == "EQ":
-            # NSE equity — map by symbol
-            _angel_token_map[symbol] = token
-            nse_equity.add(symbol)
+            # Angel One NSE equity symbols carry a "-EQ" suffix (e.g. "RELIANCE-EQ").
+            # Strip it so lookups against bare symbols work.
+            base = symbol.removesuffix("-EQ")
+            _angel_token_map[base] = token
+            nse_equity.add(base)
 
         elif seg == "NFO" and instrument_type in ("FUTSTK", "OPTSTK"):
-            # F&O eligible — extract underlying from name (e.g. "RELIANCE" from "RELIANCE25JANFUT")
-            # The 'name' field in NFO rows contains the underlying symbol
-            underlying = name.strip()
+            # NFO symbol format: "RELIANCE25JANFUT" / "RELIANCE25JAN2000CE".
+            # The underlying is the leading alpha characters before the first digit.
+            underlying = ""
+            for ch in symbol:
+                if ch.isdigit():
+                    break
+                underlying += ch
             if underlying:
                 nfo_underlying.add(underlying)
 

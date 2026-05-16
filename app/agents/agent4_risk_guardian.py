@@ -46,6 +46,8 @@ async def run_risk_guardian() -> None:
             await _process_signal(raw)
         except asyncio.CancelledError:
             break
+        except TimeoutError:
+            continue  # BLPOP socket timeout — queue is empty, just retry
         except Exception as exc:
             logger.error("Agent 4: Unexpected error in BLPOP loop: %s", exc)
             await asyncio.sleep(2)
