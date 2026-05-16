@@ -19,6 +19,7 @@ from app.constants import (
 )
 from app.database import get_pool
 from app.models.signals import EnrichedSignal, ExecutionSignal
+from redis.exceptions import TimeoutError as RedisTimeoutError
 from app.redis_client import get_redis, push_execution, get_capital, is_halted
 from app.telegram import send_message, fmt_signal_rejected
 
@@ -46,7 +47,7 @@ async def run_risk_guardian() -> None:
             await _process_signal(raw)
         except asyncio.CancelledError:
             break
-        except TimeoutError:
+        except (TimeoutError, RedisTimeoutError):
             continue  # BLPOP socket timeout — queue is empty, just retry
         except Exception as exc:
             logger.error("Agent 4: Unexpected error in BLPOP loop: %s", exc)

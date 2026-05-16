@@ -21,6 +21,7 @@ from app.constants import (
 )
 from app.database import get_pool
 from app.models.signals import ExecutionSignal
+from redis.exceptions import TimeoutError as RedisTimeoutError
 from app.redis_client import get_redis, get_capital, set_capital, set_halt, is_halted
 from app.telegram import (
     send_message,
@@ -62,7 +63,7 @@ async def run_order_manager() -> None:
             asyncio.create_task(_execute_signal(raw))
         except asyncio.CancelledError:
             break
-        except TimeoutError:
+        except (TimeoutError, RedisTimeoutError):
             continue  # BLPOP socket timeout — queue is empty, just retry
         except Exception as exc:
             logger.error("Agent 5: BLPOP loop error: %s", exc)

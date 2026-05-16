@@ -69,21 +69,16 @@ async def _load_angel_one_master() -> None:
         symbol = row.get("symbol", "").upper()
         token = row.get("token", "")
 
-        if seg == "NSE" and instrument_type == "EQ":
+        if seg == "NSE" and symbol.endswith("-EQ"):
             # Angel One NSE equity symbols carry a "-EQ" suffix (e.g. "RELIANCE-EQ").
-            # Strip it so lookups against bare symbols work.
+            # instrumenttype is blank for equities — match on symbol suffix instead.
             base = symbol.removesuffix("-EQ")
             _angel_token_map[base] = token
             nse_equity.add(base)
 
         elif seg == "NFO" and instrument_type in ("FUTSTK", "OPTSTK"):
-            # NFO symbol format: "RELIANCE25JANFUT" / "RELIANCE25JAN2000CE".
-            # The underlying is the leading alpha characters before the first digit.
-            underlying = ""
-            for ch in symbol:
-                if ch.isdigit():
-                    break
-                underlying += ch
+            # NFO name field contains the bare underlying (e.g. "RELIANCE").
+            underlying = row.get("name", "").strip().upper()
             if underlying:
                 nfo_underlying.add(underlying)
 
@@ -116,13 +111,12 @@ async def _load_dhan_master() -> None:
         trading_symbol = row.get("SEM_TRADING_SYMBOL", "").strip()
         security_id = row.get("SEM_SMST_SECURITY_ID", "").strip()
 
-        if exch != "NSE" or segment != "E":
-            continue
-        if not trading_symbol.endswith("-EQ"):
+        series = row.get("SEM_SERIES", "").strip()
+        if exch != "NSE" or segment != "E" or series != "EQ":
             continue
 
-        # Extract base symbol: "RELIANCE-EQ" → "RELIANCE"
-        base_symbol = trading_symbol.replace("-EQ", "").upper()
+        # Dhan trading symbols are bare (e.g. "RELIANCE"), no -EQ suffix.
+        base_symbol = trading_symbol.upper()
         _dhan_id_map[base_symbol] = security_id
         _dhan_symbol_map[base_symbol] = trading_symbol
         count += 1
