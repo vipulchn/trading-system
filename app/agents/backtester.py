@@ -85,9 +85,9 @@ async def run_universe_backtest() -> None:
         )
         await write_backtest_results(results)
         await write_universe(results)
+        await write_active_setup(active_setup_id, active_setup_name)  # must precede watchlist (FK)
         prev = await get_current_watchlist_symbols()
         await write_watchlist(ranked, active_setup_id)
-        await write_active_setup(active_setup_id, active_setup_name)
 
         new_syms = {r["symbol"] for r in ranked}
         await send_message(fmt_backtest_complete(
