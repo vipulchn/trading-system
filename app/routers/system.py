@@ -91,3 +91,17 @@ async def set_active(active: bool):
     state = "ACTIVE" if active else "INACTIVE"
     logger.info("trading:active manually set to %s.", state)
     return {"trading_active": active}
+
+
+@router.post("/backtest", dependencies=[Depends(_require_secret)])
+async def trigger_backtest():
+    """
+    Manually trigger the Agent 1 universe backtest.
+    Runs in the background — returns immediately.
+    Check Telegram for results when complete.
+    """
+    import asyncio
+    from app.agents.backtester import run_universe_backtest
+    asyncio.create_task(run_universe_backtest())
+    logger.info("Manual backtest triggered via /backtest.")
+    return {"status": "backtest_started", "note": "Runs in background — check Telegram for results."}
