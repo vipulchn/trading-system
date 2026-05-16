@@ -93,6 +93,35 @@ async def set_active(active: bool):
     return {"trading_active": active}
 
 
+@router.get("/backtest-results", dependencies=[Depends(_require_secret)])
+async def backtest_results():
+    """Full backtest results: active setup, watchlist, and per-symbol metrics."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        setup = await conn.fetchrow(
+            "SELECT setup_id, setup_name, elected_at FROM active_setup ORDER BY elected_at DESC LIMIT 1"
+        )
+        watchlist = await conn.fetch(
+            """
+            SELECT w.symbol, w.composite_score, w.rank,
+                   b.win_rate, b.avg_r, b.sharpe, b.max_dd,
+                   b.backtest_sharpe, b.validation_sharpe, b.trade_count, b.best_setup_id
+            FROM watchlist w
+            LEFT JOIN backtest_results b ON b.symbol = w.symbol
+            ORDER BY w.rank ASC
+            """
+        )
+        universe_count = await conn.fetchval("SELECT COUNT(*) FROM universe")
+
+    return {
+        "active_setup": dict(setup) if setup else None,
+        "universe_size": universe_count,
+        "watchlist_size": len(watchlist),
+        "watchlist": [dict(r) for r in watchlist],
+        "ts": datetime.now(IST).isoformat(),
+    }
+
+
 @router.post("/backtest", dependencies=[Depends(_require_secret)])
 async def trigger_backtest():
     """
