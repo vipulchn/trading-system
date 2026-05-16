@@ -4,13 +4,13 @@ tv_client.py — TradingView historical data via tvdatafeed.
 Replaces Angel One OHLCV fetches in the backtester.
 No API key or auth required. NSE symbols fetched directly.
 
-tvdatafeed is synchronous — all calls are wrapped in run_in_executor
-so they don't block the asyncio event loop.
+tvDatafeed is synchronous and uses a single WebSocket — all calls
+are serialized through a threading.Lock to avoid race conditions.
 """
 
 import asyncio
 import logging
-from datetime import date, timedelta
+import threading
 from functools import partial
 from typing import Optional
 
@@ -19,20 +19,34 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 _tv = None
+_tv_lock = threading.Lock()
 
 
 def _get_tv():
     global _tv
     if _tv is None:
         from tvDatafeed import TvDatafeed
-        _tv = TvDatafeed()  # anonymous — no login needed for NSE data
+        _tv = TvDatafeed()
     return _tv
 
 
-async def _run(fn, *args, **kwargs):
-    """Run a synchronous tvdatafeed call in a thread pool."""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, partial(fn, *args, **kwargs))
+def _sanitize(symbol: str) -> str:
+    """TradingView rejects hyphens in NSE symbols — strip them."""
+    return symbol.replace("-", "")
+
+
+def _fetch_daily_sync(symbol: str, n_bars: int) -> Optional[pd.DataFrame]:
+    from tvDatafeed import Interval
+    with _tv_lock:
+        tv = _get_tv()
+        return tv.get_hist(_sanitize(symbol), "NSE", interval=Interval.in_daily, n_bars=n_bars)
+
+
+def _fetch_15min_sync(symbol: str, n_bars: int) -> Optional[pd.DataFrame]:
+    from tvDatafeed import Interval
+    with _tv_lock:
+        tv = _get_tv()
+        return tv.get_hist(_sanitize(symbol), "NSE", interval=Interval.in_15_minute, n_bars=n_bars)
 
 
 async def get_daily_bars(symbol: str, n_bars: int = 60) -> Optional[list[dict]]:
@@ -41,17 +55,11 @@ async def get_daily_bars(symbol: str, n_bars: int = 60) -> Optional[list[dict]]:
     Returns list of {timestamp, open, high, low, close, volume} dicts, or None on failure.
     """
     try:
-        from tvDatafeed import Interval
-        tv = _get_tv()
-        df: pd.DataFrame = await _run(
-            tv.get_hist, symbol, "NSE",
-            interval=Interval.in_daily,
-            n_bars=n_bars,
-        )
+        loop = asyncio.get_event_loop()
+        df = await loop.run_in_executor(None, partial(_fetch_daily_sync, symbol, n_bars))
         if df is None or df.empty:
             return None
-        df = df.reset_index()
-        df = df.rename(columns={"datetime": "timestamp"})
+        df = df.reset_index().rename(columns={"datetime": "timestamp"})
         return df[["timestamp", "open", "high", "low", "close", "volume"]].to_dict("records")
     except Exception as exc:
         logger.debug("TV daily fetch failed for %s: %s", symbol, exc)
@@ -65,17 +73,11 @@ async def get_15min_bars(symbol: str, n_bars: int = 5000) -> Optional[list[dict]
     Returns list of {timestamp, open, high, low, close, volume} dicts, or None on failure.
     """
     try:
-        from tvDatafeed import Interval
-        tv = _get_tv()
-        df: pd.DataFrame = await _run(
-            tv.get_hist, symbol, "NSE",
-            interval=Interval.in_15_minute,
-            n_bars=n_bars,
-        )
+        loop = asyncio.get_event_loop()
+        df = await loop.run_in_executor(None, partial(_fetch_15min_sync, symbol, n_bars))
         if df is None or df.empty:
             return None
-        df = df.reset_index()
-        df = df.rename(columns={"datetime": "timestamp"})
+        df = df.reset_index().rename(columns={"datetime": "timestamp"})
         return df[["timestamp", "open", "high", "low", "close", "volume"]].to_dict("records")
     except Exception as exc:
         logger.debug("TV 15min fetch failed for %s: %s", symbol, exc)
