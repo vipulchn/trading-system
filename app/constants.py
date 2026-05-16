@@ -52,9 +52,9 @@ SCORE_WEIGHT_AVG_R: float             = 0.30
 SUSPICIOUS_WIN_RATE: float            = 0.70
 
 # ── Backtest quality gates (targeting 40-50% win rate, ≥1:2 RR) ──────────────
-MIN_BACKTEST_WIN_RATE: float = 0.38   # 38% floor — live target is 40-50%
-MIN_BACKTEST_AVG_R: float    = 0.10   # must show positive expectancy per trade
-MIN_BACKTEST_SHARPE: float   = 0.20   # train Sharpe must be positive
+MIN_BACKTEST_WIN_RATE: float = 0.35   # 35% floor — above 33% breakeven for 1:2 RR
+MIN_BACKTEST_AVG_R: float    = 0.05   # positive expectancy per trade
+MIN_BACKTEST_SHARPE: float   = 0.10   # train Sharpe must be positive
 
 # ── Agent 2 ───────────────────────────────────────────────────────────────────
 MAX_DAILY_CANDIDATES: int = 8

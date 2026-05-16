@@ -36,8 +36,8 @@ strategy(
 // ── User inputs ───────────────────────────────────────────────────────────────
 TV_SECRET    = input.string("REPLACE_WITH_YOUR_SECRET", title="Webhook Secret",   group="Server")
 WEBHOOK_URL  = input.string("https://your-app.railway.app/webhook", title="Webhook URL (for reference)", group="Server")
-SETUP_ID     = input.int(1, "Active Setup ID (1-5)", minval=1, maxval=5,           group="Setup")
-SETUP_NAME   = input.string("POC Magnet Pull",         title="Active Setup Name",  group="Setup")
+SETUP_ID     = input.int(2, "Active Setup ID (1-5)", minval=1, maxval=5,           group="Setup")
+SETUP_NAME   = input.string("Value Area Breakout",     title="Active Setup Name",  group="Setup")
 
 // Session filter: 09:45–15:00 IST (no trades in first 30 min or last 15)
 SESSION      = "0945-1500"
