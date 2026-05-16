@@ -1,0 +1,246 @@
+// ============================================================
+// NSE VRVP + SVP Intraday Strategy — Webhook Alert Generator
+// Pine Script v5
+//
+// PURPOSE
+//   Detects the 5 VRVP+SVP setups and fires a webhook alert
+//   to Agent 3 (FastAPI /webhook) with the full TVWebhookPayload.
+//
+// SETUP
+//   1. Add to a 15-minute NSE equity chart.
+//   2. Set "Webhook URL" in each alert to your Railway /webhook URL.
+//   3. Set "Message" to {{strategy.order.alert_message}}.
+//   4. Fill in TV_WEBHOOK_SECRET below (must match your .env).
+//
+// NOTES
+//   • VRVP and SVP are approximated from Pine's built-in volume
+//     and VWAP primitives. The Python backtester has the full
+//     200-bucket implementation; Pine is used only for triggering.
+//   • All risk sizing and execution happen server-side (Agents 4+5).
+//   • Do NOT enable "Recalculate on every tick" — bar-close only.
+// ============================================================
+
+//@version=5
+strategy(
+    title         = "NSE VRVP+SVP Intraday [Webhook]",
+    overlay       = true,
+    calc_on_every_tick = false,
+    default_qty_type  = strategy.fixed,
+    default_qty_value = 1,
+    currency      = currency.INR,
+    commission_type   = strategy.commission.percent,
+    commission_value  = 0.03,
+    slippage      = 2
+)
+
+// ── User inputs ───────────────────────────────────────────────────────────────
+TV_SECRET    = input.string("REPLACE_WITH_YOUR_SECRET", title="Webhook Secret",   group="Server")
+WEBHOOK_URL  = input.string("https://your-app.railway.app/webhook", title="Webhook URL (for reference)", group="Server")
+SETUP_ID     = input.int(1, "Active Setup ID (1-5)", minval=1, maxval=5,           group="Setup")
+SETUP_NAME   = input.string("POC Magnet Pull",         title="Active Setup Name",  group="Setup")
+
+// Session filter: 09:45–15:00 IST (no trades in first 30 min or last 15)
+SESSION      = "0945-1500"
+in_session   = not na(time("15", SESSION, "Asia/Kolkata"))
+
+// No-trade window: also skip Fridays after 14:30 (optional)
+is_friday    = dayofweek == dayofweek.friday
+late_friday  = is_friday and hour >= 14 and minute >= 30
+
+// ── VWAP and volume approximations ───────────────────────────────────────────
+// Session VWAP (resets each day) — used as SVP POC proxy
+vwap_val     = ta.vwap(hlc3)
+
+// Rolling 20-bar volume moving average (proxy for value area boundary)
+avg_vol_20   = ta.sma(volume, 20)
+
+// Upper/Lower value area bands (±0.5 ATR from VWAP as VA proxy)
+atr_14       = ta.atr(14)
+va_upper     = vwap_val + atr_14 * 0.5    // SVP VAH proxy
+va_lower     = vwap_val - atr_14 * 0.5    // SVP VAL proxy
+
+// POC proxy: highest-volume price level (approximated as VWAP on flat days)
+poc          = vwap_val
+
+// Volume ratio vs 10-bar average
+vol_ratio    = volume / ta.sma(volume, 10)
+
+// ── VRVP level approximations (prior session) ─────────────────────────────────
+// We use daily pivots as a stand-in for VRVP levels.
+// The real VRVP is computed in Python — these are triggers only.
+prev_high    = ta.highest(high,  syminfo.session == syminfo.session[1] ? 1 : 25)
+prev_low     = ta.lowest(low,    syminfo.session == syminfo.session[1] ? 1 : 25)
+prev_close   = close[1]
+pivot        = (prev_high + prev_low + prev_close) / 3
+r1           = 2 * pivot - prev_low    // VRVP VAH proxy
+s1           = 2 * pivot - prev_high   // VRVP VAL proxy
+vrvp_poc_est = pivot
+vrvp_vah_est = r1
+vrvp_val_est = s1
+
+// Day type detection
+gap_up   = open > prev_high
+gap_down = open < prev_low
+day_type_str = gap_up ? "Gap" : gap_down ? "Gap" :
+               (close > open and vol_ratio > 1.5) ? "Trend" :
+               (close < open and vol_ratio > 1.5) ? "Trend" : "Normal"
+
+// ── Setup conditions ──────────────────────────────────────────────────────────
+
+// ── Setup 1: POC Magnet Pull ─────────────────────────────────────────────────
+// Price is > 0.5% from VWAP, low volume, rejection bar back toward VWAP
+dist_from_poc = math.abs(close - poc) / poc
+s1_long_cond  = (close < poc) and (dist_from_poc > 0.005)
+              and (volume < avg_vol_20) and (close > open)   // bullish rejection bar
+s1_short_cond = (close > poc) and (dist_from_poc > 0.005)
+              and (volume < avg_vol_20) and (close < open)   // bearish rejection bar
+
+// ── Setup 2: Value Area Breakout ─────────────────────────────────────────────
+s2_long_cond  = (close > va_upper) and (vol_ratio >= 1.5) and (close > open)
+s2_short_cond = (close < va_lower) and (vol_ratio >= 1.5) and (close < open)
+
+// ── Setup 3: HVN Rejection ───────────────────────────────────────────────────
+// Price touches vrvp_vah/val (HVN proxies) then rejects with low volume
+near_hvn_above = math.abs(high - vrvp_vah_est) / vrvp_vah_est < 0.005
+near_hvn_below = math.abs(low  - vrvp_val_est) / vrvp_val_est < 0.005
+wick_pct_top   = (high - close) / math.max(high - low, 0.01)
+wick_pct_bot   = (close - low)  / math.max(high - low, 0.01)
+
+s3_long_cond  = near_hvn_below and (wick_pct_bot >= 0.60) and (volume < avg_vol_20)
+s3_short_cond = near_hvn_above and (wick_pct_top >= 0.60) and (volume < avg_vol_20)
+
+// ── Setup 4: LVN Acceleration ────────────────────────────────────────────────
+// Price punches through a thin area (LVN proxy: price between VA and pivot)
+in_lvn_zone   = (close > va_lower and close < vrvp_val_est) or
+                (close > vrvp_vah_est and close < va_upper)
+s4_long_cond  = in_lvn_zone and (close >= poc) and (vol_ratio >= 0.8)
+s4_short_cond = in_lvn_zone and (close <  poc) and (vol_ratio >= 0.8)
+
+// ── Setup 5: Open Drive ───────────────────────────────────────────────────────
+// First bar only, gaps outside VA, full-body bar, very high volume
+is_first_bar  = bar_index == ta.valuewhen(session.isfirstbar, bar_index, 0)
+od_body_pct   = math.abs(close - open) / math.max(high - low, 0.01)
+s5_long_cond  = is_first_bar and gap_up  and (od_body_pct >= 0.80) and (vol_ratio >= 2.0)
+s5_short_cond = is_first_bar and gap_down and (od_body_pct >= 0.80) and (vol_ratio >= 2.0)
+
+// ── Combine per active setup ──────────────────────────────────────────────────
+long_signal  = in_session and not late_friday and (
+    (SETUP_ID == 1 and s1_long_cond)  or
+    (SETUP_ID == 2 and s2_long_cond)  or
+    (SETUP_ID == 3 and s3_long_cond)  or
+    (SETUP_ID == 4 and s4_long_cond)  or
+    (SETUP_ID == 5 and s5_long_cond)
+)
+
+short_signal = in_session and not late_friday and (
+    (SETUP_ID == 1 and s1_short_cond) or
+    (SETUP_ID == 2 and s2_short_cond) or
+    (SETUP_ID == 3 and s3_short_cond) or
+    (SETUP_ID == 4 and s4_short_cond) or
+    (SETUP_ID == 5 and s5_short_cond)
+)
+
+// ── Risk levels ───────────────────────────────────────────────────────────────
+// Long levels
+long_entry   = close
+long_stop    = SETUP_ID == 1 ? low  - atr_14 * 0.5 :
+               SETUP_ID == 2 ? va_upper - atr_14 * 0.3 :
+               SETUP_ID == 3 ? vrvp_val_est - atr_14 * 0.2 :
+               SETUP_ID == 4 ? vrvp_val_est  :
+               /*SETUP 5*/     math.min(va_lower, open - atr_14)
+long_t1      = poc
+long_t2      = SETUP_ID == 1 ? va_upper :
+               SETUP_ID == 2 ? vrvp_vah_est + (vrvp_vah_est - va_upper) :
+               poc + (poc - long_stop) * 2
+
+// Short levels
+short_entry  = close
+short_stop   = SETUP_ID == 1 ? high + atr_14 * 0.5 :
+               SETUP_ID == 2 ? va_lower + atr_14 * 0.3 :
+               SETUP_ID == 3 ? vrvp_vah_est + atr_14 * 0.2 :
+               SETUP_ID == 4 ? vrvp_vah_est :
+               /*SETUP 5*/     math.max(va_upper, open + atr_14)
+short_t1     = poc
+short_t2     = SETUP_ID == 1 ? va_lower :
+               SETUP_ID == 2 ? vrvp_val_est - (va_lower - vrvp_val_est) :
+               poc - (short_stop - poc) * 2
+
+// R:R ratio
+long_rr  = (long_t2  - long_entry)  / math.max(long_entry  - long_stop,  0.01)
+short_rr = (short_entry - short_t2) / math.max(short_stop  - short_entry, 0.01)
+
+// SVP alignment
+svp_align_long  = close > vwap_val ? "Confirming" : close < vwap_val ? "Against" : "Neutral"
+svp_align_short = close < vwap_val ? "Confirming" : close > vwap_val ? "Against" : "Neutral"
+
+// ── Webhook message builder ───────────────────────────────────────────────────
+long_msg = '{'
+    + '"secret":"'         + TV_SECRET              + '",'
+    + '"symbol":"'         + syminfo.ticker          + '",'
+    + '"exchange":"'       + syminfo.prefix          + '",'
+    + '"direction":"Long",'
+    + '"setup_id":'        + str.tostring(SETUP_ID)  + ','
+    + '"entry_price":'     + str.tostring(long_entry,  "#.00") + ','
+    + '"stop_price":'      + str.tostring(long_stop,   "#.00") + ','
+    + '"target_1":'        + str.tostring(long_t1,     "#.00") + ','
+    + '"target_2":'        + str.tostring(long_t2,     "#.00") + ','
+    + '"vrvp_poc":'        + str.tostring(vrvp_poc_est,"#.00") + ','
+    + '"vrvp_vah":'        + str.tostring(vrvp_vah_est,"#.00") + ','
+    + '"vrvp_val":'        + str.tostring(vrvp_val_est,"#.00") + ','
+    + '"vrvp_level_used":"POC",'
+    + '"svp_poc":'         + str.tostring(poc,         "#.00") + ','
+    + '"svp_vah":'         + str.tostring(va_upper,    "#.00") + ','
+    + '"svp_val":'         + str.tostring(va_lower,    "#.00") + ','
+    + '"svp_alignment":"'  + svp_align_long          + '",'
+    + '"day_type":"'       + day_type_str             + '",'
+    + '"volume_ratio":'    + str.tostring(vol_ratio,   "#.00") + ','
+    + '"bar_time":"'       + str.tostring(time)        + '",'
+    + '"rr_ratio":'        + str.tostring(long_rr,     "#.00")
+    + '}'
+
+short_msg = '{'
+    + '"secret":"'         + TV_SECRET              + '",'
+    + '"symbol":"'         + syminfo.ticker          + '",'
+    + '"exchange":"'       + syminfo.prefix          + '",'
+    + '"direction":"Short",'
+    + '"setup_id":'        + str.tostring(SETUP_ID)  + ','
+    + '"entry_price":'     + str.tostring(short_entry, "#.00") + ','
+    + '"stop_price":'      + str.tostring(short_stop,  "#.00") + ','
+    + '"target_1":'        + str.tostring(short_t1,    "#.00") + ','
+    + '"target_2":'        + str.tostring(short_t2,    "#.00") + ','
+    + '"vrvp_poc":'        + str.tostring(vrvp_poc_est,"#.00") + ','
+    + '"vrvp_vah":'        + str.tostring(vrvp_vah_est,"#.00") + ','
+    + '"vrvp_val":'        + str.tostring(vrvp_val_est,"#.00") + ','
+    + '"vrvp_level_used":"POC",'
+    + '"svp_poc":'         + str.tostring(poc,         "#.00") + ','
+    + '"svp_vah":'         + str.tostring(va_upper,    "#.00") + ','
+    + '"svp_val":'         + str.tostring(va_lower,    "#.00") + ','
+    + '"svp_alignment":"'  + svp_align_short         + '",'
+    + '"day_type":"'       + day_type_str             + '",'
+    + '"volume_ratio":'    + str.tostring(vol_ratio,   "#.00") + ','
+    + '"bar_time":"'       + str.tostring(time)        + '",'
+    + '"rr_ratio":'        + str.tostring(short_rr,    "#.00")
+    + '}'
+
+// ── Strategy entries (for backtesting in TradingView) ─────────────────────────
+if long_signal and long_rr >= 2.0
+    strategy.entry("Long", strategy.long, alert_message=long_msg)
+    strategy.exit("Long Exit", "Long", stop=long_stop, limit=long_t2)
+
+if short_signal and short_rr >= 2.0
+    strategy.entry("Short", strategy.short, alert_message=short_msg)
+    strategy.exit("Short Exit", "Short", stop=short_stop, limit=short_t2)
+
+// ── Visuals ───────────────────────────────────────────────────────────────────
+plot(vwap_val,    title="SVP POC (VWAP)",  color=color.yellow,     linewidth=2)
+plot(va_upper,    title="SVP VAH",          color=color.new(color.green, 60), linewidth=1)
+plot(va_lower,    title="SVP VAL",          color=color.new(color.red,   60), linewidth=1)
+plot(vrvp_vah_est,title="VRVP VAH (Pivot R1)", color=color.new(color.teal, 40), linewidth=1, style=plot.style_circles)
+plot(vrvp_val_est,title="VRVP VAL (Pivot S1)", color=color.new(color.orange, 40), linewidth=1, style=plot.style_circles)
+
+plotshape(long_signal  and long_rr  >= 2.0, title="Long Signal",  location=location.belowbar, style=shape.triangleup,   color=color.green, size=size.small)
+plotshape(short_signal and short_rr >= 2.0, title="Short Signal", location=location.abovebar, style=shape.triangledown, color=color.red,   size=size.small)
+
+// ── Alert conditions (create one alert per symbol per setup) ──────────────────
+alertcondition(long_signal  and long_rr  >= 2.0, title="VRVP Long Signal",  message="{{strategy.order.alert_message}}")
+alertcondition(short_signal and short_rr >= 2.0, title="VRVP Short Signal", message="{{strategy.order.alert_message}}")
