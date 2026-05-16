@@ -24,7 +24,7 @@ _tv = None
 def _get_tv():
     global _tv
     if _tv is None:
-        from tvdatafeed import TvDatafeed
+        from tvDatafeed import TvDatafeed
         _tv = TvDatafeed()  # anonymous — no login needed for NSE data
     return _tv
 
@@ -41,7 +41,7 @@ async def get_daily_bars(symbol: str, n_bars: int = 60) -> Optional[list[dict]]:
     Returns list of {timestamp, open, high, low, close, volume} dicts, or None on failure.
     """
     try:
-        from tvdatafeed import Interval
+        from tvDatafeed import Interval
         tv = _get_tv()
         df: pd.DataFrame = await _run(
             tv.get_hist, symbol, "NSE",
@@ -65,7 +65,7 @@ async def get_15min_bars(symbol: str, n_bars: int = 5000) -> Optional[list[dict]
     Returns list of {timestamp, open, high, low, close, volume} dicts, or None on failure.
     """
     try:
-        from tvdatafeed import Interval
+        from tvDatafeed import Interval
         tv = _get_tv()
         df: pd.DataFrame = await _run(
             tv.get_hist, symbol, "NSE",
