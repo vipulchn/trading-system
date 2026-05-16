@@ -26,6 +26,7 @@ from app.constants import (
     WALKFORWARD_TRAIN_MONTHS, WALKFORWARD_OOS_MONTHS, WALKFORWARD_VALIDATION_RATIO,
     SCORE_WEIGHT_SHARPE, SCORE_WEIGHT_WIN_RATE, SCORE_WEIGHT_AVG_R,
     SUSPICIOUS_WIN_RATE,
+    MIN_BACKTEST_WIN_RATE, MIN_BACKTEST_AVG_R, MIN_BACKTEST_SHARPE,
     BROKERAGE_PCT, STT_PCT, GST_ON_BROKERAGE,
     EXCHANGE_CHARGE_PER_ORDER, SEBI_CHARGE_PCT,
 )
@@ -178,12 +179,23 @@ def _backtest_symbol(symbol: str, raw_candles: list[dict]) -> Optional[dict]:
         if len(train_trades) < MIN_BACKTEST_TRADES:
             continue
         bt = _compute_metrics(train_trades)
+        # Gate 1: suspicious overfit
         if bt["win_rate"] > SUSPICIOUS_WIN_RATE:
+            continue
+        # Gate 2: minimum quality — win rate, positive expectancy, positive Sharpe
+        if bt["win_rate"] < MIN_BACKTEST_WIN_RATE:
+            continue
+        if bt["avg_r"] < MIN_BACKTEST_AVG_R:
+            continue
+        if bt["sharpe"] < MIN_BACKTEST_SHARPE:
             continue
         oos_trades = _simulate_setup(setup_id, oos_df)
         if len(oos_trades) < 5:
             continue
         oos = _compute_metrics(oos_trades)
+        # Gate 3: OOS must be profitable (fixes sign-flip bug where negative×ratio passes)
+        if oos["sharpe"] <= 0:
+            continue
         if oos["sharpe"] < float(WALKFORWARD_VALIDATION_RATIO) * bt["sharpe"]:
             continue
         composite = (bt["sharpe"] * SCORE_WEIGHT_SHARPE

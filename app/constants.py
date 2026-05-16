@@ -37,19 +37,24 @@ VRVP_ROWS: int               = 200
 VRVP_VALUE_AREA_PCT: float   = 0.70
 
 # ── Universe filters ──────────────────────────────────────────────────────────
-MIN_AVG_DAILY_TURNOVER_CR: int = 50
-MIN_AVG_DAILY_VOLUME: int      = 500_000
+MIN_AVG_DAILY_TURNOVER_CR: int = 25       # lowered from 50 to widen universe
+MIN_AVG_DAILY_VOLUME: int      = 300_000  # lowered from 500K
 UNIVERSE_TOP_N: int            = 50
 MIN_BACKTEST_TRADES: int       = 30
 
 # ── Walk-forward ──────────────────────────────────────────────────────────────
-WALKFORWARD_TRAIN_MONTHS: int       = 4
-WALKFORWARD_OOS_MONTHS: int         = 2
+WALKFORWARD_TRAIN_MONTHS: int         = 4
+WALKFORWARD_OOS_MONTHS: int           = 2
 WALKFORWARD_VALIDATION_RATIO: Decimal = Decimal("0.70")
-SCORE_WEIGHT_SHARPE: float  = 0.40
-SCORE_WEIGHT_WIN_RATE: float = 0.30
-SCORE_WEIGHT_AVG_R: float   = 0.30
-SUSPICIOUS_WIN_RATE: float  = 0.70
+SCORE_WEIGHT_SHARPE: float            = 0.40
+SCORE_WEIGHT_WIN_RATE: float          = 0.30
+SCORE_WEIGHT_AVG_R: float             = 0.30
+SUSPICIOUS_WIN_RATE: float            = 0.70
+
+# ── Backtest quality gates (targeting 40-50% win rate, ≥1:2 RR) ──────────────
+MIN_BACKTEST_WIN_RATE: float = 0.38   # 38% floor — live target is 40-50%
+MIN_BACKTEST_AVG_R: float    = 0.10   # must show positive expectancy per trade
+MIN_BACKTEST_SHARPE: float   = 0.20   # train Sharpe must be positive
 
 # ── Agent 2 ───────────────────────────────────────────────────────────────────
 MAX_DAILY_CANDIDATES: int = 8
