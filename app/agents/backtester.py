@@ -11,7 +11,7 @@ DB write helpers  → agent1_db.py
 import asyncio
 import logging
 from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import datetime
 from typing import Optional
 
 import numpy as np
@@ -56,7 +56,7 @@ async def run_universe_backtest() -> None:
         logger.info("Agent 1: Universe = %d symbols.", len(symbols))
 
         results: list[dict] = []
-        sem = asyncio.Semaphore(5)
+        sem = asyncio.Semaphore(3)
 
         async def process_one(sym: str) -> None:
             async with sem:
@@ -110,33 +110,23 @@ async def run_universe_backtest() -> None:
 # ── Universe building ─────────────────────────────────────────────────────────
 
 async def _build_universe() -> list[str]:
-    from app.symbol_master import get_fo_eligible_symbols, angel_token
-    from app.angel_client import get_candle_data
+    from app.symbol_master import get_fo_eligible_symbols
+    from app.tv_client import get_daily_bars
 
     fo_symbols = get_fo_eligible_symbols()
-    today = date.today()
-    from_date = (today - timedelta(days=30)).strftime("%Y-%m-%d") + " 09:15"
-    to_date = today.strftime("%Y-%m-%d") + " 15:30"
     passing: list[str] = []
-    sem = asyncio.Semaphore(10)
+    sem = asyncio.Semaphore(10)  # TV has no strict rate limits
 
     async def check_one(symbol: str) -> None:
-        token = angel_token(symbol)
-        if not token:
-            return
         async with sem:
-            try:
-                daily = await get_candle_data(token, "ONE_DAY", from_date, to_date)
-                if len(daily) < 10:
-                    return
-                df = pd.DataFrame(daily)
-                df["turnover_cr"] = df["close"] * df["volume"] / 1e7
-                if (df["turnover_cr"].mean() >= MIN_AVG_DAILY_TURNOVER_CR
-                        and df["volume"].mean() >= MIN_AVG_DAILY_VOLUME):
-                    passing.append(symbol)
-                await asyncio.sleep(0.1)
-            except Exception as exc:
-                logger.debug("Agent 1: turnover check %s: %s", symbol, exc)
+            daily = await get_daily_bars(symbol, n_bars=60)
+            if daily is None or len(daily) < 10:
+                return
+            df = pd.DataFrame(daily)
+            df["turnover_cr"] = df["close"] * df["volume"] / 1e7
+            if (df["turnover_cr"].mean() >= MIN_AVG_DAILY_TURNOVER_CR
+                    and df["volume"].mean() >= MIN_AVG_DAILY_VOLUME):
+                passing.append(symbol)
 
     await asyncio.gather(*[check_one(s) for s in fo_symbols])
     logger.info("Agent 1: %d symbols pass universe filters.", len(passing))
@@ -144,13 +134,10 @@ async def _build_universe() -> list[str]:
 
 
 async def _fetch_ohlcv(symbol: str) -> Optional[list[dict]]:
-    from app.symbol_master import angel_token
-    from app.angel_client import get_six_months_15min
-    token = angel_token(symbol)
-    if not token:
-        return None
-    candles = await get_six_months_15min(token)
-    if len(candles) < MIN_BACKTEST_TRADES * 2:
+    from app.tv_client import get_15min_bars
+    # 5000 bars ≈ 200 trading days (6+ months at 25 bars/day)
+    candles = await get_15min_bars(symbol, n_bars=5000)
+    if candles is None or len(candles) < MIN_BACKTEST_TRADES * 2:
         return None
     return candles
 
@@ -247,7 +234,8 @@ def _compute_metrics(trades: list[dict]) -> dict:
     if not trades:
         return {"win_rate": 0, "avg_r": 0, "sharpe": 0, "max_dd": 0}
     r = np.array([t["r_multiple"] for t in trades])
-    win_rate = float(np.mean(r > 0))
+    # r >= 0 counts breakeven exits (STOP_BREAKEVEN) as wins — they preserve capital
+    win_rate = float(np.mean(r >= 0))
     avg_r = float(np.mean(r))
     sharpe = float(avg_r / np.std(r) * np.sqrt(min(len(r), 252))) if np.std(r) > 0 else 0.0
     cum = np.cumsum(r)
